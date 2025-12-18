@@ -1,0 +1,109 @@
+FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+WORKDIR /workspace
+
+# ========== 0) 基础依赖 ==========
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    software-properties-common \
+    ca-certificates \
+    curl \
+    wget \
+    git \
+    bash \
+    && rm -rf /var/lib/apt/lists/*
+
+# ========== 1) fish 安装与默认启动 ==========
+RUN add-apt-repository ppa:fish-shell/release-4 -y \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends fish \
+    && rm -rf /var/lib/apt/lists/*
+
+# 注：Docker 里不建议 chsh，直接用 CMD/SHELL 控制默认 shell
+
+# ========== 2) Anaconda 安装 ==========
+ENV CONDA_DIR=/opt/conda
+ENV PATH=$CONDA_DIR/bin:$PATH
+
+RUN wget -q https://repo.anaconda.com/archive/Anaconda3-2025.06-1-Linux-x86_64.sh -O /tmp/anaconda.sh \
+    && bash /tmp/anaconda.sh -b -p $CONDA_DIR \
+    && rm -f /tmp/anaconda.sh \
+    && $CONDA_DIR/bin/conda clean -a -y
+
+# ========== 3) HuggingFace 镜像与缓存位置 ==========
+ENV HF_ENDPOINT=https://hf-mirror.com
+ENV HF_HOME=/data/huggingface
+
+# bashrc（可选但你写了就加上）
+RUN echo '\nexport HF_ENDPOINT=https://hf-mirror.com' >> /root/.bashrc \
+    && echo 'export HF_HOME=/data/huggingface' >> /root/.bashrc
+
+# fish config
+RUN mkdir -p /root/.config/fish \
+    && printf '%s\n' \
+    'set -x HF_ENDPOINT https://hf-mirror.com' \
+    'set -x HF_HOME /data/huggingface' \
+    >> /root/.config/fish/config.fish
+
+# ========== 4) claudecode: fnm + Node + claude-code ==========
+RUN set -eux; \
+  arch="$(uname -m)"; \
+  case "$arch" in \
+    x86_64) fnm_arch="linux";; \
+    aarch64|arm64) fnm_arch="linux-arm64";; \
+    *) echo "unsupported arch: $arch" && exit 1;; \
+  esac; \
+  curl -fsSL "https://github.com/Schniz/fnm/releases/latest/download/fnm-${fnm_arch}.zip" -o /tmp/fnm.zip; \
+  apt-get update && apt-get install -y --no-install-recommends unzip; \
+  unzip /tmp/fnm.zip -d /tmp; \
+  install -m 0755 /tmp/fnm /usr/local/bin/fnm; \
+  rm -rf /tmp/fnm.zip /tmp/fnm; \
+  rm -rf /var/lib/apt/lists/*; \
+  fnm --version
+  
+RUN /bin/bash -lc '\
+  set -euxo pipefail; \
+  eval "$(fnm env)"; \
+  out="$(fnm install --lts 2>&1 | tee /dev/stderr)"; \
+  ver="$(echo "$out" | sed -n "s/.*Installing Node v\\([0-9][0-9.]*\\).*/\\1/p" | tail -n1)"; \
+  test -n "$ver"; \
+  fnm use "$ver"; \
+  node -v; npm -v; \
+  npm install -g @anthropic-ai/claude-code; \
+  npm cache clean --force; \
+  claude --version; \
+'
+
+# fish 里启用 fnm（你需要的那句）
+RUN printf '%s\n' \
+    '' \
+    '# fnm (Node version manager)' \
+    'set -gx FNM_PATH /root/.local/share/fnm' \
+    'set -gx PATH $FNM_PATH $PATH' \
+    'fnm env --use-on-cd | source' \
+    >> /root/.config/fish/config.fish
+
+# ========== 5) pip 换源 ==========
+RUN python -m pip install --upgrade pip \
+    && pip config set global.index-url https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple \
+    && pip config set global.extra-index-url "https://mirrors.aliyun.com/pypi/simple https://pypi.mirrors.ustc.edu.cn/simple https://mirror.sjtu.edu.cn/pypi/web/simple"
+
+# ========== 6) Ubuntu apt 换源（SJTU 镜像） ==========
+RUN printf '%s\n' \
+    'deb https://mirror.sjtu.edu.cn/ubuntu/ jammy main restricted universe multiverse' \
+    '# deb-src https://mirror.sjtu.edu.cn/ubuntu/ jammy main restricted universe multiverse' \
+    'deb https://mirror.sjtu.edu.cn/ubuntu/ jammy-updates main restricted universe multiverse' \
+    '# deb-src https://mirror.sjtu.edu.cn/ubuntu/ jammy-updates main restricted universe multiverse' \
+    'deb https://mirror.sjtu.edu.cn/ubuntu/ jammy-backports main restricted universe multiverse' \
+    '# deb-src https://mirror.sjtu.edu.cn/ubuntu/ jammy-backports main restricted universe multiverse' \
+    'deb https://mirror.sjtu.edu.cn/ubuntu/ jammy-security main restricted universe multiverse' \
+    '# deb-src https://mirror.sjtu.edu.cn/ubuntu/ jammy-security main restricted universe multiverse' \
+    '' \
+    '# deb https://mirror.sjtu.edu.cn/ubuntu/ jammy-proposed main restricted universe multiverse' \
+    '# deb-src https://mirror.sjtu.edu.cn/ubuntu/ jammy-proposed main restricted universe multiverse' \
+    > /etc/apt/sources.list \
+    && apt-get update
+
+
+# 默认启动 fish
+CMD ["/usr/bin/fish"]
