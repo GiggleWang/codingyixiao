@@ -107,3 +107,8 @@ RUN printf '%s\n' \
 
 # 默认启动 fish
 CMD ["/usr/bin/fish"]
+
+### things to be done ###
+# conda tos accept --override-channels --channel pkgs/main
+# conda tos accept --override-channels --channel pkgs/r
+# conda update -n base -c defaults conda
